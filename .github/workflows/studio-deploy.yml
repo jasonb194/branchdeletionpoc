@@ -1,0 +1,129 @@
+name: Deploy/Cleanup Branch Studios
+
+on:
+  push:
+    branches:
+      - '**'
+  delete:
+
+jobs:
+  deploy:
+    name: Deploy Studio
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate hostname from branch
+        id: hostname
+        run: |
+          # Get the branch name from the ref
+          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+          
+          # Sanitize branch name for hostname:
+          # - Convert to lowercase
+          # - Replace invalid characters with hyphens
+          # - Remove leading/trailing hyphens
+          # - Ensure it starts with a letter (Sanity requirement)
+          # - Truncate to fit Sanity hostname limits
+          HOSTNAME=$(echo "$BRANCH_NAME" | \
+            tr '[:upper:]' '[:lower:]' | \
+            sed 's/[^a-z0-9-]/-/g' | \
+            sed 's/--*/-/g' | \
+            sed 's/^-//' | \
+            sed 's/-$//' | \
+            cut -c1-50)
+          
+          # Add a prefix to ensure it starts with a letter and avoid conflicts
+          STUDIO_HOSTNAME="branchdeletionpoc-${HOSTNAME}"
+          
+          echo "hostname=${STUDIO_HOSTNAME}" >> $GITHUB_OUTPUT
+          echo "📦 Will deploy to: ${STUDIO_HOSTNAME}.sanity.studio"
+
+      - name: Build and Deploy Studio
+        env:
+          SANITY_AUTH_TOKEN: ${{ secrets.SANITY_AUTH_TOKEN }}
+          SANITY_STUDIO_HOSTNAME: ${{ steps.hostname.outputs.hostname }}
+        run: |
+          echo "🚀 Deploying studio to ${SANITY_STUDIO_HOSTNAME}.sanity.studio"
+          npx sanity deploy --source-maps false -y
+
+      - name: Deployment Summary
+        run: |
+          echo "## 🎉 Studio Deployed Successfully!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**URL:** https://${{ steps.hostname.outputs.hostname }}.sanity.studio" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** \`${GITHUB_REF#refs/heads/}\`" >> $GITHUB_STEP_SUMMARY
+
+  cleanup:
+    name: Cleanup Studio
+    runs-on: ubuntu-latest
+    if: github.event_name == 'delete' && github.event.ref_type == 'branch'
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate hostname from deleted branch
+        id: hostname
+        run: |
+          # Get the deleted branch name from the event
+          BRANCH_NAME="${{ github.event.ref }}"
+          
+          # Apply same sanitization as deploy
+          HOSTNAME=$(echo "$BRANCH_NAME" | \
+            tr '[:upper:]' '[:lower:]' | \
+            sed 's/[^a-z0-9-]/-/g' | \
+            sed 's/--*/-/g' | \
+            sed 's/^-//' | \
+            sed 's/-$//' | \
+            cut -c1-50)
+          
+          STUDIO_HOSTNAME="branchdeletionpoc-${HOSTNAME}"
+          
+          echo "hostname=${STUDIO_HOSTNAME}" >> $GITHUB_OUTPUT
+          echo "🗑️ Will undeploy: ${STUDIO_HOSTNAME}.sanity.studio"
+
+      - name: Undeploy Studio
+        env:
+          SANITY_AUTH_TOKEN: ${{ secrets.SANITY_AUTH_TOKEN }}
+          SANITY_STUDIO_HOSTNAME: ${{ steps.hostname.outputs.hostname }}
+        run: |
+          echo "🗑️ Undeploying studio: ${SANITY_STUDIO_HOSTNAME}"
+          # Use -y to auto-confirm the undeploy prompt
+          npx sanity undeploy -y || echo "⚠️ Studio may not exist or already undeployed"
+
+      - name: Cleanup Summary
+        run: |
+          echo "## 🗑️ Studio Cleanup Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Removed:** \`${{ steps.hostname.outputs.hostname }}.sanity.studio\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Deleted Branch:** \`${{ github.event.ref }}\`" >> $GITHUB_STEP_SUMMARY
